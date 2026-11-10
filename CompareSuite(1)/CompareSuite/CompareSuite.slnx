@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Compare.Contracts/Compare.Contracts.csproj" />
+    <Project Path="src/Compare.Agent/Compare.Agent.csproj" />
+    <Project Path="src/Compare.Gateway/Compare.Gateway.csproj" />
+    <Project Path="src/Compare.Web/Compare.Web.csproj" />
+  </Folder>
+</Solution>

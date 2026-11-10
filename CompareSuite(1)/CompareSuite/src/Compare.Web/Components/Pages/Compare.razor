@@ -1,0 +1,586 @@
+@page "/"
+@implements IDisposable
+@inject GatewayClient Gateway
+
+@if (error is not null)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Danger" Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false" class="rz-mb-4">
+        @error
+    </RadzenAlert>
+}
+
+<RadzenCard class="rz-mb-4">
+    <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="1.5rem" AlignItems="AlignItems.End">
+        <RadzenFormField Text="Comparison set" Variant="Variant.Outlined">
+            <RadzenDropDown Data="@sets" TextProperty="Name" ValueProperty="Id" Value="@setId"
+                            Change="@OnSetChanged" Disabled="@busy" AllowClear="false"
+                            Placeholder="Choose a set" Style="min-width:16rem" />
+        </RadzenFormField>
+
+        @if (CurrentSet is not null)
+        {
+            <RadzenStack Gap="0.25rem">
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-m-0">Servers to compare</RadzenText>
+                <RadzenCheckBoxList @bind-Value="selectedIds" TValue="string" Data="@SetServers"
+                                    TextProperty="Name" ValueProperty="Id" Disabled="@busy"
+                                    Orientation="Orientation.Horizontal" />
+            </RadzenStack>
+        }
+
+        <RadzenButton Text="Compare servers" BusyText="Comparing…" IsBusy="@busy" Click="@RunAsync"
+                      ButtonStyle="ButtonStyle.Primary" Icon="compare_arrows"
+                      Disabled="@(busy || CurrentSet is null || selectedIds.Count() < 2)" />
+    </RadzenStack>
+
+    @if (CurrentSet is not null)
+    {
+        <RadzenText TextStyle="TextStyle.Caption" class="rz-mt-3 rz-mb-0">
+            @CurrentSet.Paths.Count watched @(CurrentSet.Paths.Count == 1 ? "path" : "paths"), files and folders. Pick two or more servers.
+        </RadzenText>
+    }
+</RadzenCard>
+
+@if (run is not null)
+{
+    <RadzenCard class="rz-mb-4">
+        <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.5rem" class="rz-mb-4">
+            @foreach (var s in run.Servers)
+            {
+                <RadzenCard Variant="Variant.Outlined" class="agentcard">
+                    <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-m-0">@Name(s.ServerId)</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="@(s.State == ServerState.Unreachable ? "rz-m-0 rz-color-danger" : "rz-m-0")">
+                        @ServerStatus(s)
+                    </RadzenText>
+                </RadzenCard>
+            }
+        </RadzenStack>
+
+        @if (run.State == RunState.Failed)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Danger" Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false">
+                The run failed: @run.Error
+            </RadzenAlert>
+        }
+        else if (run.State != RunState.Completed)
+        {
+            <RadzenText TextStyle="TextStyle.Body2">Collecting file hashes and folder listings from each server…</RadzenText>
+            <RadzenProgressBar Mode="ProgressBarMode.Indeterminate" ShowValue="false" Value="100" />
+        }
+        else
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="1rem" class="rz-mb-4">
+                <RadzenCard Variant="Variant.Outlined" class="totalcard">
+                    <RadzenText TextStyle="TextStyle.H4" class="rz-m-0">@filesSame</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-m-0">files match</RadzenText>
+                </RadzenCard>
+                <RadzenCard Variant="Variant.Outlined" class="totalcard">
+                    <RadzenText TextStyle="TextStyle.H4" class="rz-m-0 rz-color-danger">@filesDiffer</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-m-0">files differ</RadzenText>
+                </RadzenCard>
+                <RadzenCard Variant="Variant.Outlined" class="totalcard">
+                    <RadzenText TextStyle="TextStyle.H4" class="rz-m-0 rz-color-warning">@filesMissing</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-m-0">files missing somewhere</RadzenText>
+                </RadzenCard>
+                <RadzenCard Variant="Variant.Outlined" class="totalcard">
+                    <RadzenText TextStyle="TextStyle.H4" class="rz-m-0 rz-color-warning">@foldersOff</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-m-0">folders differ</RadzenText>
+                </RadzenCard>
+            </RadzenStack>
+
+            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="1.5rem" class="rz-mb-4">
+                <RadzenFormField Text="Compare against" Variant="Variant.Outlined">
+                    <RadzenDropDown Data="@BaselineOptions" TextProperty="Text" ValueProperty="Value"
+                                    Value="@baselineChoice" Change="@OnBaselineChanged" AllowClear="false"
+                                    Style="min-width:16rem" />
+                </RadzenFormField>
+                <RadzenFormField Text="Show" Variant="Variant.Outlined">
+                    <RadzenDropDown Data="@FilterOptions" TextProperty="Text" ValueProperty="Value"
+                                    Value="@filter" Change="@OnFilterChanged" AllowClear="false"
+                                    Style="min-width:16rem" />
+                </RadzenFormField>
+            </RadzenStack>
+
+            @if (visible.Count == 0)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Success" Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false">
+                    Nothing needs attention. Every checked file and folder matches.
+                </RadzenAlert>
+            }
+            else
+            {
+                <RadzenDataGrid Data="@visible" TItem="ComparisonRow" AllowPaging="true" PageSize="100"
+                                PagerHorizontalAlign="HorizontalAlign.Left" ShowPagingSummary="true"
+                                Density="Density.Compact" RowRender="@OnRowRender">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="ComparisonRow" Title="File or folder" Sortable="false" Filterable="false" MinWidth="320px">
+                            <Template Context="r">
+                                <div class="item" style="@Indent(r)" title="@r.Path">
+                                    @if (r.IsFolder)
+                                    {
+                                        <RadzenButton Variant="Variant.Text" ButtonStyle="ButtonStyle.Base" Size="ButtonSize.Small"
+                                                      Icon="@(collapsed.Contains(r.Path) ? "chevron_right" : "expand_more")"
+                                                      Text="@(Leaf(r.Path) + "/")" Click="@(() => ToggleFolder(r.Path))" />
+                                        @if (IssueLabel(r.Path) is { } label)
+                                        {
+                                            <RadzenBadge BadgeStyle="BadgeStyle.Danger" Variant="Variant.Outlined" IsPill="true" Text="@label" />
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <RadzenButton Variant="Variant.Text" Size="ButtonSize.Small" Icon="description"
+                                                      ButtonStyle="@(ReferenceEquals(r, selectedRow) ? ButtonStyle.Primary : ButtonStyle.Base)"
+                                                      Text="@Leaf(r.Path)" Click="@(() => SelectRow(r))" />
+                                    }
+                                </div>
+                            </Template>
+                        </RadzenDataGridColumn>
+
+                        @foreach (var server in run.Servers)
+                        {
+                            var serverId = server.ServerId;
+                            <RadzenDataGridColumn TItem="ComparisonRow" Title="@Header(serverId)" Sortable="false"
+                                                  Filterable="false" Width="150px" TextAlign="TextAlign.Center">
+                                <Template Context="r">
+                                    @{ var c = r.Cells.FirstOrDefault(x => x.ServerId == serverId); }
+                                    @if (c is not null)
+                                    {
+                                        <RadzenBadge BadgeStyle="@BadgeKind(r, c)" Variant="@BadgeVariant(r, c)"
+                                                     Text="@BadgeText(r, c)" Style="@BadgeCss(r, c)" title="@Tip(c)" />
+                                    }
+                                </Template>
+                            </RadzenDataGridColumn>
+                        }
+                    </Columns>
+                </RadzenDataGrid>
+
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-mt-3 rz-mb-0">
+                    Select a folder name to collapse it, or a file name to see its differences. Servers with the same hash
+                    share a color; a ringed badge disagrees with @(baseline == "" ? "the majority" : "the baseline").
+                </RadzenText>
+            }
+        }
+    </RadzenCard>
+}
+
+@if (selectedRow is not null)
+{
+    <RadzenCard class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H6" class="path-title">@selectedRow.Path</RadzenText>
+
+        <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="1.5rem" AlignItems="AlignItems.Center" class="rz-mb-4">
+            <RadzenFormField Text="Left" Variant="Variant.Outlined">
+                <RadzenDropDown Data="@PresentOptions" TextProperty="Text" ValueProperty="Value" @bind-Value="diffA"
+                                AllowClear="false" Style="min-width:12rem" />
+            </RadzenFormField>
+            <RadzenFormField Text="Right" Variant="Variant.Outlined">
+                <RadzenDropDown Data="@PresentOptions" TextProperty="Text" ValueProperty="Value" @bind-Value="diffB"
+                                AllowClear="false" Style="min-width:12rem" />
+            </RadzenFormField>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                <RadzenCheckBox @bind-Value="ignoreEol" Name="eol" />
+                <RadzenLabel Text="Ignore line endings" Component="eol" />
+            </RadzenStack>
+            <RadzenButton Text="Show differences" BusyText="Loading…" IsBusy="@diffBusy" Click="@LoadDiffAsync"
+                          ButtonStyle="ButtonStyle.Primary" Disabled="@(diffBusy || diffA == diffB || diffA == "")" />
+        </RadzenStack>
+
+        @if (diff is not null)
+        {
+            @if (diff.Message is not null)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false" class="rz-mb-3">
+                    @diff.Message
+                </RadzenAlert>
+            }
+
+            @if (diff.Kind == "text" && diff.Lines is not null)
+            {
+                <div class="diffbox">
+                    <table class="diff">
+                        <thead>
+                            <tr><th colspan="2">@Name(loadedA)</th><th colspan="2">@Name(loadedB)</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var l in diff.Lines)
+                            {
+                                <tr>
+                                    <td class="no">@l.LeftNo</td>
+                                    <td class="code @l.LeftType"><pre>@l.LeftText</pre></td>
+                                    <td class="no">@l.RightNo</td>
+                                    <td class="code @l.RightType"><pre>@l.RightText</pre></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else if (diff.Kind == "binary")
+            {
+                <RadzenText TextStyle="TextStyle.Body2">
+                    @Name(loadedA) is @diff.SizeA?.ToString("N0") bytes and @Name(loadedB) is @diff.SizeB?.ToString("N0") bytes.
+                    The first difference is at byte @diff.FirstDifferenceOffset?.ToString("N0").
+                </RadzenText>
+                <div class="hexpair">
+                    <pre>@string.Join("\n", diff.HexA ?? [])</pre>
+                    <pre>@string.Join("\n", diff.HexB ?? [])</pre>
+                </div>
+            }
+        }
+    </RadzenCard>
+}
+
+@code {
+    enum Verdict { Same, Differs, Missing }
+
+    sealed record Option(string Value, string Text);
+
+    List<ComparisonSet> sets = [];
+    List<ServerSummary> servers = [];
+    IEnumerable<string> selectedIds = Enumerable.Empty<string>();
+    HashSet<string> collapsed = new(StringComparer.Ordinal);
+    Dictionary<string, int> issues = new(StringComparer.Ordinal);
+    List<ComparisonRow> visible = [];
+
+    string setId = "";
+    string filter = "problems";
+    string baselineChoice = "*";          // "*" = all servers (majority), otherwise a server id
+    string diffA = "";
+    string diffB = "";
+    string loadedA = "";
+    string loadedB = "";
+    bool ignoreEol = true;
+    bool busy;
+    bool diffBusy;
+    string? error;
+
+    int filesSame, filesDiffer, filesMissing, foldersOff, minDepth;
+
+    ComparisonRun? run;
+    ComparisonRow? selectedRow;
+    DiffResult? diff;
+
+    readonly CancellationTokenSource cts = new();
+
+    string baseline => baselineChoice == "*" ? "" : baselineChoice;
+
+    ComparisonSet? CurrentSet => sets.FirstOrDefault(s => s.Id == setId);
+
+    IEnumerable<ServerSummary> SetServers =>
+        servers.Where(s => CurrentSet?.ServerIds.Contains(s.Id) == true);
+
+    IEnumerable<Option> BaselineOptions =>
+        new[] { new Option("*", "All servers (majority)") }
+            .Concat((run?.Servers ?? []).Where(s => s.State == ServerState.Done)
+                .Select(s => new Option(s.ServerId, $"{Name(s.ServerId)} only")));
+
+    static readonly Option[] FilterOptions =
+    [
+        new("problems", "Items that need attention"),
+        new("all", "Everything")
+    ];
+
+    IEnumerable<Option> PresentOptions =>
+        (selectedRow?.Cells ?? []).Where(c => c.State == CellState.Present)
+            .Select(c => new Option(c.ServerId, Name(c.ServerId)));
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            sets = await Gateway.GetSetsAsync(cts.Token);
+            servers = await Gateway.GetServersAsync(cts.Token);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = $"Could not reach the gateway: {ex.Message}";
+        }
+    }
+
+    void OnSetChanged(object? value)
+    {
+        setId = value?.ToString() ?? "";
+        selectedIds = CurrentSet?.ServerIds.ToList() ?? new List<string>();
+        ResetResults();
+        error = null;
+    }
+
+    void OnBaselineChanged(object? value)
+    {
+        baselineChoice = value?.ToString() ?? "*";
+        Recompute();
+    }
+
+    void OnFilterChanged(object? value)
+    {
+        filter = value?.ToString() ?? "problems";
+        RefreshVisible();
+    }
+
+    void ResetResults()
+    {
+        run = null;
+        selectedRow = null;
+        diff = null;
+        baselineChoice = "*";
+        collapsed.Clear();
+        Recompute();
+    }
+
+    async Task RunAsync()
+    {
+        busy = true;
+        error = null;
+        ResetResults();
+
+        try
+        {
+            var id = await Gateway.StartRunAsync(setId, selectedIds.ToList(), cts.Token);
+            while (true)
+            {
+                run = await Gateway.GetRunAsync(id, cts.Token);
+                if (run is null || run.State is RunState.Completed or RunState.Failed) break;
+                StateHasChanged();
+                await Task.Delay(1000, cts.Token);
+            }
+            Recompute();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            error = $"The comparison could not be started: {ex.Message}";
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    // ---- Judging rows (majority mode, or relative to one baseline server) ----
+
+    Verdict Judge(ComparisonRow r)
+    {
+        if (baseline == "")
+            return r.Status switch
+            {
+                RowStatus.Identical => Verdict.Same,
+                RowStatus.Differs => Verdict.Differs,
+                _ => Verdict.Missing
+            };
+
+        var b = r.Cells.FirstOrDefault(c => c.ServerId == baseline);
+        if (b is null || b.State == CellState.Unreachable) return Verdict.Same;
+
+        var verdict = Verdict.Same;
+        foreach (var c in r.Cells)
+        {
+            if (c.ServerId == baseline || c.State == CellState.Unreachable) continue;
+
+            if (c.State != b.State)
+            {
+                if (c.State == CellState.Missing || b.State == CellState.Missing) return Verdict.Missing;
+                verdict = Verdict.Differs;
+            }
+            else if (!r.IsFolder && c.State == CellState.Present && c.Hash != b.Hash)
+            {
+                verdict = Verdict.Differs;
+            }
+        }
+        return verdict;
+    }
+
+    bool IsOutlier(ComparisonRow r, ServerCell c)
+    {
+        if (r.IsFolder || c.State != CellState.Present) return false;
+        if (baseline == "") return r.MajorityHash is not null && c.Hash != r.MajorityHash;
+
+        var b = r.Cells.FirstOrDefault(x => x.ServerId == baseline);
+        return b is { State: CellState.Present } && c.ServerId != baseline && c.Hash != b.Hash;
+    }
+
+    /// <summary>Totals, plus how many items inside each folder need attention.</summary>
+    void Recompute()
+    {
+        issues = new Dictionary<string, int>(StringComparer.Ordinal);
+        filesSame = filesDiffer = filesMissing = foldersOff = minDepth = 0;
+
+        if (run is not null && run.Rows.Count > 0)
+        {
+            minDepth = run.Rows.Min(r => Depth(r.Path));
+
+            foreach (var r in run.Rows)
+            {
+                var verdict = Judge(r);
+                if (r.IsFolder)
+                {
+                    if (verdict != Verdict.Same) foldersOff++;
+                }
+                else if (verdict == Verdict.Same) filesSame++;
+                else if (verdict == Verdict.Differs) filesDiffer++;
+                else filesMissing++;
+
+                if (verdict == Verdict.Same) continue;
+
+                var parent = r.Path;
+                int slash;
+                while ((slash = parent.LastIndexOf('/')) > 0)
+                {
+                    parent = parent[..slash];
+                    issues[parent] = issues.GetValueOrDefault(parent) + 1;
+                }
+            }
+        }
+
+        RefreshVisible();
+    }
+
+    void RefreshVisible()
+    {
+        visible = run is null
+            ? new List<ComparisonRow>()
+            : run.Rows.Where(r => !AncestorCollapsed(r.Path)
+                                  && (filter == "all" || Judge(r) != Verdict.Same || issues.ContainsKey(r.Path)))
+                      .ToList();
+    }
+
+    // ---- Tree helpers ----
+
+    static int Depth(string path) => path.Count(c => c == '/');
+    static string Leaf(string path) => path[(path.LastIndexOf('/') + 1)..];
+
+    string Indent(ComparisonRow r) => $"padding-left:{(Depth(r.Path) - minDepth) * 18}px";
+
+    bool AncestorCollapsed(string path)
+    {
+        var parent = path;
+        int slash;
+        while ((slash = parent.LastIndexOf('/')) > 0)
+        {
+            parent = parent[..slash];
+            if (collapsed.Contains(parent)) return true;
+        }
+        return false;
+    }
+
+    void ToggleFolder(string path)
+    {
+        if (!collapsed.Remove(path)) collapsed.Add(path);
+        RefreshVisible();
+    }
+
+    string? IssueLabel(string folder) =>
+        issues.TryGetValue(folder, out var n) && n > 0 ? $"{n} inside need attention" : null;
+
+    void OnRowRender(RowRenderEventArgs<ComparisonRow> args)
+    {
+        args.Attributes["style"] = Judge(args.Data) switch
+        {
+            Verdict.Differs => "background-color: color-mix(in srgb, var(--rz-danger) 10%, transparent);",
+            Verdict.Missing => "background-color: color-mix(in srgb, var(--rz-warning) 14%, transparent);",
+            _ => "opacity: .7;"
+        };
+    }
+
+    // ---- Diff ----
+
+    void SelectRow(ComparisonRow row)
+    {
+        selectedRow = row;
+        diff = null;
+
+        var present = row.Cells.Where(c => c.State == CellState.Present).ToList();
+        var first = baseline != ""
+            ? present.FirstOrDefault(c => c.ServerId == baseline)
+            : present.FirstOrDefault(c => c.Hash == row.MajorityHash);
+        first ??= present.FirstOrDefault();
+
+        var other = present.FirstOrDefault(c => first is not null && c.Hash != first.Hash)
+                    ?? present.FirstOrDefault(c => c.ServerId != first?.ServerId);
+
+        diffA = first?.ServerId ?? "";
+        diffB = other?.ServerId ?? "";
+    }
+
+    async Task LoadDiffAsync()
+    {
+        if (run is null || selectedRow is null) return;
+
+        diffBusy = true;
+        diff = null;
+        error = null;
+        loadedA = diffA;
+        loadedB = diffB;
+
+        try
+        {
+            diff = await Gateway.GetDiffAsync(run.Id, selectedRow.Path, diffA, diffB, ignoreEol, cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            error = $"Could not load the differences: {ex.Message}";
+        }
+        finally
+        {
+            diffBusy = false;
+        }
+    }
+
+    // ---- Display ----
+
+    string Name(string id) => servers.FirstOrDefault(s => s.Id == id)?.Name ?? id;
+
+    string Header(string serverId) => Name(serverId) + (serverId == baseline ? " (baseline)" : "");
+
+    string ServerStatus(ServerRunState s) => s.State switch
+    {
+        ServerState.Pending => "Waiting",
+        ServerState.Done => $"{s.FileCount:N0} items",
+        _ => s.Error ?? "No answer"
+    };
+
+    int HashIndex(ComparisonRow r, string? hash)
+    {
+        var distinct = r.Cells.Where(c => c.State == CellState.Present).Select(c => c.Hash).Distinct().ToList();
+        return Math.Max(0, distinct.IndexOf(hash)) % 6;
+    }
+
+    bool IsHashBadge(ComparisonRow r, ServerCell c) => c.State == CellState.Present && !r.IsFolder;
+
+    BadgeStyle BadgeKind(ComparisonRow r, ServerCell c) => c.State switch
+    {
+        CellState.Present when r.IsFolder => BadgeStyle.Secondary,
+        CellState.Present => BadgeStyle.Primary,
+        CellState.Missing or CellState.Unreadable or CellState.WrongType => BadgeStyle.Warning,
+        _ => BadgeStyle.Light
+    };
+
+    Variant BadgeVariant(ComparisonRow r, ServerCell c) =>
+        IsHashBadge(r, c) || c.State is CellState.Unreadable or CellState.WrongType
+            ? Variant.Filled
+            : Variant.Outlined;
+
+    string BadgeCss(ComparisonRow r, ServerCell c) => IsHashBadge(r, c)
+        ? $"background-color: var(--h{HashIndex(r, c.Hash)}); color: #fff;" +
+          (IsOutlier(r, c) ? " outline: 2px solid var(--rz-text-color); outline-offset: 2px;" : "")
+        : "";
+
+    string BadgeText(ComparisonRow r, ServerCell c) => c.State switch
+    {
+        CellState.Present when r.IsFolder => "folder",
+        CellState.Present => c.Hash![..8],
+        CellState.Missing => "missing",
+        CellState.Unreadable => "unreadable",
+        CellState.WrongType => r.IsFolder ? "is a file" : "is a folder",
+        _ => "no answer"
+    };
+
+    string Tip(ServerCell c) => c.State == CellState.Present && c.Hash is not null
+        ? $"{c.Hash} ({c.Size:N0} bytes)"
+        : c.State.ToString();
+
+    public void Dispose()
+    {
+        cts.Cancel();
+        cts.Dispose();
+    }
+}

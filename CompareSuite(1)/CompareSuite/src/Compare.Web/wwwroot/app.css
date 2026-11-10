@@ -1,0 +1,30 @@
+/* Radzen's theme supplies fonts, colors and component styling; this file only covers what Radzen doesn't. */
+:root {
+  --h0: #1b6ca8; --h1: #b4531a; --h2: #2c8a57; --h3: #8a3fa0; --h4: #b0273d; --h5: #66761a;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+}
+
+.shell { max-width: 1280px; margin: 0 auto; padding: .5rem 0 4rem; }
+.agentcard, .totalcard { min-width: 9.5rem; }
+.item { display: flex; align-items: center; gap: .4rem; }
+.path-title { font-family: var(--mono); word-break: break-all; }
+
+/* Text diff */
+.diffbox { max-height: 70vh; overflow: auto; border: 1px solid var(--rz-base-300); border-radius: 4px; }
+.diff { border-collapse: collapse; width: 100%; }
+.diff th { position: sticky; top: 0; background: var(--rz-base-background-color); text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--rz-base-300); font-size: .85rem; }
+.diff td { vertical-align: top; padding: 0 .4rem; }
+.diff td.no { width: 3rem; text-align: right; color: var(--rz-text-tertiary-color); font: .75rem/1.6 var(--mono); user-select: none; }
+.diff td.code { width: 50%; }
+.diff pre { margin: 0; font: .8rem/1.6 var(--mono); white-space: pre-wrap; word-break: break-all; }
+.diff td.Inserted  { background: rgba(46, 160, 67, .22); }
+.diff td.Deleted   { background: rgba(229, 83, 75, .22); }
+.diff td.Modified  { background: rgba(212, 167, 44, .26); }
+.diff td.Imaginary { background: rgba(128, 128, 128, .12); }
+
+/* Binary hex view */
+.hexpair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; overflow-x: auto; }
+.hexpair pre { margin: 0; padding: .6rem; border: 1px solid var(--rz-base-300); border-radius: 4px; font: .78rem/1.5 var(--mono); overflow-x: auto; }
+@media (max-width: 760px) { .hexpair { grid-template-columns: 1fr; } }
+
+#blazor-error-ui { display: none; position: fixed; inset: auto 0 0 0; padding: .6rem 1rem; background: var(--rz-danger); color: #fff; z-index: 1000; }

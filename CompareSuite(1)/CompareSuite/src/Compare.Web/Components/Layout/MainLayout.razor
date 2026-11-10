@@ -1,0 +1,25 @@
+@inherits LayoutComponentBase
+
+<RadzenComponents />
+
+<RadzenLayout>
+    <RadzenHeader>
+        <RadzenRow AlignItems="AlignItems.Center" Gap="0" class="rz-mx-4">
+            <RadzenColumn Size="8">
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H1" class="rz-m-0">Server comparison</RadzenText>
+            </RadzenColumn>
+            <RadzenColumn Size="4" class="rz-text-align-end">
+                <RadzenAppearanceToggle />
+            </RadzenColumn>
+        </RadzenRow>
+    </RadzenHeader>
+    <RadzenBody>
+        <div class="shell">
+            @Body
+        </div>
+    </RadzenBody>
+</RadzenLayout>
+
+<div id="blazor-error-ui">
+    Something went wrong. <a href="">Reload</a>
+</div>

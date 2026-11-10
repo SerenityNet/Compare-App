@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="/" />
+    <title>Server comparison</title>
+    <RadzenTheme Theme="standard" @rendermode="InteractiveServer" />
+    <link rel="stylesheet" href="app.css" />
+    <HeadOutlet @rendermode="NoPrerender" />
+</head>
+<body>
+    <Routes @rendermode="NoPrerender" />
+    <script src="_framework/blazor.web.js"></script>
+    <script src="_content/Radzen.Blazor/Radzen.Blazor.js?v=@(typeof(Radzen.Colors).Assembly.GetName().Version)"></script>
+</body>
+</html>
+
+@code {
+    // The whole app is interactive; no prerender, so the gateway is only called once per page load.
+    static readonly IComponentRenderMode NoPrerender = new InteractiveServerRenderMode(prerender: false);
+}
