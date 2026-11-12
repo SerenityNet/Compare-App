@@ -9,7 +9,7 @@ namespace Compare.Gateway;
 public sealed class DiffService(AgentClient agents, IOptions<GatewayOptions> options)
 {
     public async Task<DiffResult> BuildAsync(
-        ServerInfo a, ServerInfo b, string path, bool ignoreLineEndings, CancellationToken ct)
+        AgentEndpoint a, AgentEndpoint b, string path, bool ignoreLineEndings, CancellationToken ct)
     {
         var o = options.Value;
 

@@ -6,8 +6,6 @@ public sealed class ServerInfo
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
-    public string AgentUrl { get; set; } = "";
-    public string ApiKey { get; set; } = "";
 }
 
 public sealed class GatewayOptions

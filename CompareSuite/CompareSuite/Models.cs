@@ -8,6 +8,7 @@ namespace Compare.Contracts;
 /// A file or folder to watch. Path is "rootAlias" or "rootAlias/sub/path", where rootAlias is
 /// defined in each agent's own config, so physical locations can differ per server.
 /// Include/Exclude are simple wildcards (*, ?) matched against file names only.
+/// ExcludeFolders are folder names or wildcards; a matching folder is skipped along with everything inside it.
 /// </summary>
 public sealed class WatchedPath
 {
@@ -18,6 +19,7 @@ public sealed class WatchedPath
     public bool CheckFolders { get; set; } = true;
     public string[] Include { get; set; } = [];
     public string[] Exclude { get; set; } = [];
+    public string[] ExcludeFolders { get; set; } = [];
 }
 
 public sealed class ComparisonSet

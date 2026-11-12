@@ -11,6 +11,7 @@ builder.Host.UseSystemd();
 
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection("Gateway"));
 builder.Services.AddHttpClient("agent");
+builder.Services.AddSingleton<AgentDirectory>();
 builder.Services.AddSingleton<AgentClient>();
 builder.Services.AddSingleton<RunStore>();
 builder.Services.AddSingleton<RunQueue>();
@@ -66,7 +67,7 @@ app.MapGet("/runs/{id}", (string id, RunStore store) =>
 // Diffs are limited to files that appeared in a run, between servers that took part in it.
 app.MapGet("/diff", async (
     string runId, string path, string a, string b, bool? ignoreLineEndings,
-    IOptions<GatewayOptions> o, RunStore store, DiffService diffs, CancellationToken ct) =>
+    RunStore store, AgentDirectory directory, DiffService diffs, CancellationToken ct) =>
 {
     var run = store.Get(runId);
     if (run is null) return Results.NotFound();
@@ -75,18 +76,29 @@ app.MapGet("/diff", async (
     if (!inRun.Contains(a) || !inRun.Contains(b) || run.Rows.All(r => r.Path != path || r.IsFolder))
         return Results.BadRequest(new { error = "That path or server is not part of this run." });
 
-    var serverA = o.Value.Servers.First(s => s.Id == a);
-    var serverB = o.Value.Servers.First(s => s.Id == b);
-
     try
     {
+        var serverA = directory.Resolve(a);
+        var serverB = directory.Resolve(b);
         return Results.Ok(await diffs.BuildAsync(serverA, serverB, path, ignoreLineEndings ?? true, ct));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: 500);
     }
     catch (HttpRequestException ex)
     {
         return Results.Problem($"An agent could not be reached: {ex.Message}", statusCode: 502);
     }
 });
+
+// Warn at startup about any server that is missing its route or cluster in the ReverseProxy section.
+var agentDirectory = app.Services.GetRequiredService<AgentDirectory>();
+foreach (var server in gateway.Servers)
+{
+    try { agentDirectory.Resolve(server.Id); }
+    catch (InvalidOperationException ex) { app.Logger.LogWarning("{Message}", ex.Message); }
+}
 
 // Health of each agent, from YARP's active health checks.
 app.MapGet("/health/agents", (IProxyStateLookup lookup, IOptions<GatewayOptions> o) =>

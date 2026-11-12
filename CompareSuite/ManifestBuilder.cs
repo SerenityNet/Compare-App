@@ -24,20 +24,31 @@ public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOp
                 var root = new DirectoryInfo(rp.FullPath);
                 var enumeration = new EnumerationOptions
                 {
-                    RecurseSubdirectories = wp.Recursive,
                     IgnoreInaccessible = true,
                     AttributesToSkip = FileAttributes.ReparsePoint   // never follow links out of the root
                 };
 
-                if (wp.CheckFolders)
-                {
-                    Add(items, rp, root, allowLink: true);
-                    foreach (var dir in root.EnumerateDirectories("*", enumeration))
-                        Add(items, rp, dir, allowLink: false);
-                }
+                // The watched folder itself is always included; ExcludeFolders only applies to folders inside it.
+                if (wp.CheckFolders) Add(items, rp, root, allowLink: true);
 
-                foreach (var file in root.EnumerateFiles("*", enumeration))
-                    if (NameMatches(file.Name, wp)) Add(items, rp, file, allowLink: false);
+                // Walk one folder at a time so an excluded folder is skipped along with everything under it.
+                var pending = new Stack<DirectoryInfo>();
+                pending.Push(root);
+                while (pending.Count > 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var current = pending.Pop();
+
+                    foreach (var file in current.EnumerateFiles("*", enumeration))
+                        if (NameMatches(file.Name, wp)) Add(items, rp, file, allowLink: false);
+
+                    foreach (var dir in current.EnumerateDirectories("*", enumeration))
+                    {
+                        if (FolderExcluded(dir.Name, wp)) continue;
+                        if (wp.CheckFolders) Add(items, rp, dir, allowLink: false);
+                        if (wp.Recursive) pending.Push(dir);
+                    }
+                }
             }
             // A watched path that doesn't exist on this server yields nothing,
             // which the gateway reports as "missing" wherever other servers have it.
@@ -74,6 +85,9 @@ public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOp
         var key = relative == "." ? rp.Alias : $"{rp.Alias}/{relative}";
         items.TryAdd(key, info);
     }
+
+    static bool FolderExcluded(string folderName, WatchedPath wp) =>
+        wp.ExcludeFolders.Any(p => FileSystemName.MatchesSimpleExpression(p, folderName, ignoreCase: true));
 
     static bool NameMatches(string name, WatchedPath wp)
     {

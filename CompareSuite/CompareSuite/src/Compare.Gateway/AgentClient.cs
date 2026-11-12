@@ -6,16 +6,16 @@ namespace Compare.Gateway;
 
 public sealed class AgentClient(IHttpClientFactory factory, IOptions<GatewayOptions> options)
 {
-    HttpClient Create(ServerInfo server)
+    HttpClient Create(AgentEndpoint server)
     {
         var client = factory.CreateClient("agent");
-        client.BaseAddress = new Uri(server.AgentUrl);
+        client.BaseAddress = server.Address;
         client.Timeout = TimeSpan.FromSeconds(options.Value.AgentTimeoutSeconds);
         client.DefaultRequestHeaders.Add(ApiKeyAuth.Header, server.ApiKey);
         return client;
     }
 
-    public async Task<ManifestResponse> GetManifestAsync(ServerInfo server, List<WatchedPath> paths, CancellationToken ct)
+    public async Task<ManifestResponse> GetManifestAsync(AgentEndpoint server, List<WatchedPath> paths, CancellationToken ct)
     {
         using var client = Create(server);
         using var response = await client.PostAsJsonAsync("manifest", new ManifestRequest { Paths = paths }, ct);
@@ -27,7 +27,7 @@ public sealed class AgentClient(IHttpClientFactory factory, IOptions<GatewayOpti
     /// Downloads a file unless it exceeds maxBytes.
     /// (null, null) = not found on that server; (null, size) = too large; (bytes, size) = downloaded.
     /// </summary>
-    public async Task<(byte[]? Data, long? Size)> GetFileAsync(ServerInfo server, string path, long maxBytes, CancellationToken ct)
+    public async Task<(byte[]? Data, long? Size)> GetFileAsync(AgentEndpoint server, string path, long maxBytes, CancellationToken ct)
     {
         using var client = Create(server);
         using var response = await client.GetAsync(

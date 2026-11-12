@@ -6,7 +6,7 @@ namespace Compare.Gateway;
 
 /// <summary>Processes queued runs one at a time; inside a run, all agents are queried in parallel.</summary>
 public sealed class RunWorker(
-    RunQueue queue, RunStore store, AgentClient agents,
+    RunQueue queue, RunStore store, AgentClient agents, AgentDirectory directory,
     IOptions<GatewayOptions> options, ILogger<RunWorker> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stop)
@@ -29,9 +29,7 @@ public sealed class RunWorker(
 
     async Task RunAsync(RunJob job, CancellationToken stop)
     {
-        var o = options.Value;
-        var set = o.Sets.First(s => s.Id == job.SetId);
-        var servers = job.ServerIds.Select(id => o.Servers.First(s => s.Id == id)).ToList();
+        var set = options.Value.Sets.First(s => s.Id == job.SetId);
 
         var run = store.Get(job.RunId)! with { State = RunState.Running };
         store.Set(run);
@@ -39,30 +37,33 @@ public sealed class RunWorker(
         var gate = new object();
         var manifests = new ConcurrentDictionary<string, ManifestResponse>();
 
-        await Task.WhenAll(servers.Select(async server =>
+        await Task.WhenAll(job.ServerIds.Select(async serverId =>
         {
             ServerRunState state;
             try
             {
+                // Resolving inside the try means a server with missing proxy config shows up as
+                // unreachable with a clear reason instead of failing the whole run.
+                var server = directory.Resolve(serverId);
                 var manifest = await agents.GetManifestAsync(server, set.Paths, stop);
-                manifests[server.Id] = manifest;
-                state = new ServerRunState(server.Id, ServerState.Done, null, manifest.Entries.Count);
+                manifests[serverId] = manifest;
+                state = new ServerRunState(serverId, ServerState.Done, null, manifest.Entries.Count);
             }
             catch (Exception ex) when (!stop.IsCancellationRequested)
             {
                 var reason = ex is TaskCanceledException ? "Timed out" : ex.Message;
-                log.LogWarning("Agent {Server} failed: {Reason}", server.Id, reason);
-                state = new ServerRunState(server.Id, ServerState.Unreachable, reason, 0);
+                log.LogWarning("Agent {Server} failed: {Reason}", serverId, reason);
+                state = new ServerRunState(serverId, ServerState.Unreachable, reason, 0);
             }
 
             lock (gate)
             {
-                run = run with { Servers = run.Servers.Select(s => s.ServerId == server.Id ? state : s).ToList() };
+                run = run with { Servers = run.Servers.Select(s => s.ServerId == serverId ? state : s).ToList() };
                 store.Set(run);
             }
         }));
 
-        var rows = ComparisonEngine.Pivot(servers.Select(s => s.Id).ToList(), manifests);
+        var rows = ComparisonEngine.Pivot(job.ServerIds, manifests);
 
         lock (gate)
         {

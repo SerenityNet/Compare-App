@@ -15,27 +15,19 @@
     "Servers": [
       {
         "Id": "srv1",
-        "Name": "Server 1",
-        "AgentUrl": "http://server1:5300",
-        "ApiKey": "change-me-agent-key"
+        "Name": "Server 1"
       },
       {
         "Id": "srv2",
-        "Name": "Server 2",
-        "AgentUrl": "http://server2:5300",
-        "ApiKey": "change-me-agent-key"
+        "Name": "Server 2"
       },
       {
         "Id": "srv3",
-        "Name": "Server 3",
-        "AgentUrl": "http://server3:5300",
-        "ApiKey": "change-me-agent-key"
+        "Name": "Server 3"
       },
       {
         "Id": "srv4",
-        "Name": "Server 4",
-        "AgentUrl": "http://server4:5300",
-        "ApiKey": "change-me-agent-key"
+        "Name": "Server 4"
       }
     ],
     "Sets": [
@@ -62,7 +54,11 @@
           },
           {
             "Path": "web/wwwroot",
-            "Recursive": true
+            "Recursive": true,
+            "ExcludeFolders": [
+              "node_modules",
+              ".git"
+            ]
           },
           {
             "Path": "config/appsettings.json"
