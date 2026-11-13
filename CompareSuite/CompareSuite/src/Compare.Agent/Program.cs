@@ -12,25 +12,33 @@ builder.Services.AddSingleton<PathResolver>();
 builder.Services.AddSingleton<HashCache>();
 builder.Services.AddSingleton<ManifestBuilder>();
 
+// Paths and hex hashes compress very well. The manifest carries no secrets (the API key is a request
+// header), so compression over HTTPS is safe here.
+builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
+
 var app = builder.Build();
+
+app.UseResponseCompression();
 
 var agent = app.Services.GetRequiredService<IOptions<AgentOptions>>().Value;
 app.UseApiKey(agent.ApiKey, "/health");
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", host = Environment.MachineName }));
 
-// Returns a hash manifest for the watched paths. Only hashes travel, never file contents.
-app.MapPost("/manifest", async (ManifestRequest request, ManifestBuilder manifests, CancellationToken ct) =>
+// Streams the hash manifest as a JSON array of entries, written as each file is hashed, so neither the
+// agent nor the gateway ever holds the whole manifest in one buffer. Only hashes travel, never contents.
+app.MapPost("/manifest", (ManifestRequest request, ManifestBuilder manifests, CancellationToken ct) =>
 {
     try
     {
-        var entries = await manifests.BuildAsync(request.Paths, ct);
-        return Results.Ok(new ManifestResponse(Environment.MachineName, entries));
+        manifests.Validate(request.Paths);   // fail with 400 now, before any bytes are sent
     }
     catch (PathNotAllowedException ex)
     {
         return Results.BadRequest(new { error = ex.Message });
     }
+
+    return Results.Ok(manifests.StreamAsync(request.Paths, ct));
 });
 
 // Streams one file; the gateway calls this only when a user opens a diff.

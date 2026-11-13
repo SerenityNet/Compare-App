@@ -1,3 +1,4 @@
+using System.Net;
 using Compare.Contracts;
 using Compare.Gateway;
 using Microsoft.Extensions.Options;
@@ -10,7 +11,12 @@ builder.Host.UseWindowsService();
 builder.Host.UseSystemd();
 
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection("Gateway"));
-builder.Services.AddHttpClient("agent");
+builder.Services.AddHttpClient("agent")
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AutomaticDecompression = DecompressionMethods.All,   // agents compress their manifests
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    });
 builder.Services.AddSingleton<AgentDirectory>();
 builder.Services.AddSingleton<AgentClient>();
 builder.Services.AddSingleton<RunStore>();

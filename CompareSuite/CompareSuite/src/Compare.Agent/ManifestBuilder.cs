@@ -1,4 +1,6 @@
 using System.IO.Enumeration;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Compare.Contracts;
 using Microsoft.Extensions.Options;
 
@@ -6,10 +8,65 @@ namespace Compare.Agent;
 
 public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOptions<AgentOptions> options)
 {
-    public async Task<List<FileEntry>> BuildAsync(IEnumerable<WatchedPath> watched, CancellationToken ct)
+    /// <summary>
+    /// Resolves every watched path. Call this before streaming starts, so an unknown root or an escaping
+    /// path becomes a 400 response instead of a failure halfway through a response that already began.
+    /// </summary>
+    public void Validate(IEnumerable<WatchedPath> watched)
     {
-        // logical path ("alias/sub/file.txt") -> file or folder
-        var items = new Dictionary<string, FileSystemInfo>(StringComparer.Ordinal);
+        foreach (var wp in watched) resolver.Resolve(wp.Path);
+    }
+
+    /// <summary>
+    /// Yields manifest entries as they are produced: files are hashed in parallel (MaxConcurrentHashes) and
+    /// handed over through a bounded channel, so memory stays flat however many files there are, and a slow
+    /// reader slows the hashing down instead of piling entries up. Entries arrive in no particular order.
+    /// </summary>
+    public async IAsyncEnumerable<FileEntry> StreamAsync(
+        IEnumerable<WatchedPath> watched, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var paths = watched.ToList();
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var channel = Channel.CreateBounded<FileEntry>(new BoundedChannelOptions(1000) { SingleReader = true });
+
+        var producer = Task.Run(async () =>
+        {
+            try
+            {
+                await Parallel.ForEachAsync(
+                    EnumerateItems(paths, stop.Token),
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = Math.Max(1, options.Value.MaxConcurrentHashes),
+                        CancellationToken = stop.Token
+                    },
+                    async (item, token) =>
+                        await channel.Writer.WriteAsync(await ToEntryAsync(item.Key, item.Info, token), token));
+
+                channel.Writer.TryComplete();
+            }
+            catch (Exception ex)
+            {
+                channel.Writer.TryComplete(ex);   // surfaces to the reader below
+            }
+        }, CancellationToken.None);
+
+        try
+        {
+            await foreach (var entry in channel.Reader.ReadAllAsync(ct))
+                yield return entry;
+        }
+        finally
+        {
+            stop.Cancel();                        // finished, failed or client disconnected: stop walking and hashing
+            try { await producer; } catch { }     // any error already reached the reader through the channel
+        }
+    }
+
+    /// <summary>Lazily walks the watched paths, one folder at a time, without hashing anything.</summary>
+    IEnumerable<(string Key, FileSystemInfo Info)> EnumerateItems(List<WatchedPath> watched, CancellationToken ct)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var wp in watched)
         {
@@ -17,7 +74,9 @@ public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOp
 
             if (File.Exists(rp.FullPath))
             {
-                Add(items, rp, new FileInfo(rp.FullPath), allowLink: false);
+                var file = new FileInfo(rp.FullPath);
+                if (TryKey(rp, file, allowLink: false, out var key) && seen.Add(key))
+                    yield return (key, file);
             }
             else if (Directory.Exists(rp.FullPath))
             {
@@ -29,7 +88,8 @@ public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOp
                 };
 
                 // The watched folder itself is always included; ExcludeFolders only applies to folders inside it.
-                if (wp.CheckFolders) Add(items, rp, root, allowLink: true);
+                if (wp.CheckFolders && TryKey(rp, root, allowLink: true, out var rootKey) && seen.Add(rootKey))
+                    yield return (rootKey, root);
 
                 // Walk one folder at a time so an excluded folder is skipped along with everything under it.
                 var pending = new Stack<DirectoryInfo>();
@@ -40,12 +100,16 @@ public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOp
                     var current = pending.Pop();
 
                     foreach (var file in current.EnumerateFiles("*", enumeration))
-                        if (NameMatches(file.Name, wp)) Add(items, rp, file, allowLink: false);
+                        if (NameMatches(file.Name, wp) && TryKey(rp, file, allowLink: false, out var key) && seen.Add(key))
+                            yield return (key, file);
 
                     foreach (var dir in current.EnumerateDirectories("*", enumeration))
                     {
                         if (FolderExcluded(dir.Name, wp)) continue;
-                        if (wp.CheckFolders) Add(items, rp, dir, allowLink: false);
+
+                        if (wp.CheckFolders && TryKey(rp, dir, allowLink: false, out var key) && seen.Add(key))
+                            yield return (key, dir);
+
                         if (wp.Recursive) pending.Push(dir);
                     }
                 }
@@ -53,37 +117,32 @@ public sealed class ManifestBuilder(PathResolver resolver, HashCache hashes, IOp
             // A watched path that doesn't exist on this server yields nothing,
             // which the gateway reports as "missing" wherever other servers have it.
         }
-
-        var gate = new SemaphoreSlim(Math.Max(1, options.Value.MaxConcurrentHashes));
-
-        var entries = await Task.WhenAll(items.Select(async kv =>
-        {
-            if (kv.Value is DirectoryInfo dir)
-                return new FileEntry(kv.Key, 0, dir.LastWriteTimeUtc, "", null, IsFolder: true);
-
-            var file = (FileInfo)kv.Value;
-            await gate.WaitAsync(ct);
-            try
-            {
-                return new FileEntry(kv.Key, file.Length, file.LastWriteTimeUtc, await hashes.GetHashAsync(file, ct));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                return new FileEntry(kv.Key, file.Length, file.LastWriteTimeUtc, "", ex.Message);
-            }
-            finally { gate.Release(); }
-        }));
-
-        return entries.OrderBy(e => e.RelativePath, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    static void Add(Dictionary<string, FileSystemInfo> items, ResolvedPath rp, FileSystemInfo info, bool allowLink)
+    async Task<FileEntry> ToEntryAsync(string key, FileSystemInfo info, CancellationToken ct)
     {
-        if (!allowLink && info.Attributes.HasFlag(FileAttributes.ReparsePoint)) return;
+        if (info is DirectoryInfo dir)
+            return new FileEntry(key, 0, dir.LastWriteTimeUtc, "", null, IsFolder: true);
+
+        var file = (FileInfo)info;
+        try
+        {
+            return new FileEntry(key, file.Length, file.LastWriteTimeUtc, await hashes.GetHashAsync(file, ct));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new FileEntry(key, file.Length, file.LastWriteTimeUtc, "", ex.Message);
+        }
+    }
+
+    static bool TryKey(ResolvedPath rp, FileSystemInfo info, bool allowLink, out string key)
+    {
+        key = "";
+        if (!allowLink && info.Attributes.HasFlag(FileAttributes.ReparsePoint)) return false;
 
         var relative = Path.GetRelativePath(rp.Root, info.FullName).Replace('\\', '/');
-        var key = relative == "." ? rp.Alias : $"{rp.Alias}/{relative}";
-        items.TryAdd(key, info);
+        key = relative == "." ? rp.Alias : $"{rp.Alias}/{relative}";
+        return true;
     }
 
     static bool FolderExcluded(string folderName, WatchedPath wp) =>

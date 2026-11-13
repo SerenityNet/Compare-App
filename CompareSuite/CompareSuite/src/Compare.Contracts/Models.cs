@@ -30,7 +30,7 @@ public sealed class ComparisonSet
     public List<WatchedPath> Paths { get; set; } = [];
 }
 
-// ---- Agent API ----
+// ---- Agent API: POST /manifest streams a JSON array of FileEntry ----
 
 public sealed class ManifestRequest
 {
@@ -41,6 +41,7 @@ public sealed class ManifestRequest
 public sealed record FileEntry(
     string RelativePath, long Size, DateTimeOffset Modified, string Sha256, string? Error = null, bool IsFolder = false);
 
+/// <summary>Assembled by the gateway from the entries an agent streams back (Host is the server's display name).</summary>
 public sealed record ManifestResponse(string Host, List<FileEntry> Entries);
 
 // ---- Gateway API ----

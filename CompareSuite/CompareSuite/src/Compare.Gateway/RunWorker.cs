@@ -51,7 +51,7 @@ public sealed class RunWorker(
             }
             catch (Exception ex) when (!stop.IsCancellationRequested)
             {
-                var reason = ex is TaskCanceledException ? "Timed out" : ex.Message;
+                var reason = ex is OperationCanceledException ? "Timed out waiting for the agent" : ex.Message;
                 log.LogWarning("Agent {Server} failed: {Reason}", serverId, reason);
                 state = new ServerRunState(serverId, ServerState.Unreachable, reason, 0);
             }

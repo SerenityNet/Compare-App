@@ -1,4 +1,5 @@
 using System.Net;
+using System.Runtime.CompilerServices;
 using Compare.Contracts;
 using Microsoft.Extensions.Options;
 
@@ -15,12 +16,42 @@ public sealed class AgentClient(IHttpClientFactory factory, IOptions<GatewayOpti
         return client;
     }
 
+    /// <summary>Collects a streamed manifest into one list for comparison.</summary>
     public async Task<ManifestResponse> GetManifestAsync(AgentEndpoint server, List<WatchedPath> paths, CancellationToken ct)
     {
+        var entries = new List<FileEntry>();
+        await foreach (var entry in StreamManifestAsync(server, paths, ct))
+            entries.Add(entry);
+
+        return new ManifestResponse(server.Name, entries);
+    }
+
+    /// <summary>
+    /// Reads the agent's manifest entry by entry as it arrives, so callers can process it in batches
+    /// (for example, bulk-insert every few thousand entries) instead of buffering all of it.
+    /// AgentTimeoutSeconds is an idle timeout here: it restarts every time an entry arrives.
+    /// </summary>
+    public async IAsyncEnumerable<FileEntry> StreamManifestAsync(
+        AgentEndpoint server, List<WatchedPath> paths, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var idleLimit = TimeSpan.FromSeconds(options.Value.AgentTimeoutSeconds);
+
         using var client = Create(server);
-        using var response = await client.PostAsJsonAsync("manifest", new ManifestRequest { Paths = paths }, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "manifest")
+        {
+            Content = JsonContent.Create(new ManifestRequest { Paths = paths })
+        };
+        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        idle.CancelAfter(idleLimit);
+
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, idle.Token);
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<ManifestResponse>(ct))!;
+
+        await foreach (var entry in response.Content.ReadFromJsonAsAsyncEnumerable<FileEntry>(idle.Token))
+        {
+            idle.CancelAfter(idleLimit);   // progress was made, so restart the idle clock
+            if (entry is not null) yield return entry;
+        }
     }
 
     /// <summary>
